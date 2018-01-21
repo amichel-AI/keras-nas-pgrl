@@ -2,7 +2,7 @@ import numpy as np
 import argparse
 import importlib
 import keras as keras
-from keras.datasets import mnist
+from keras.datasets import cifar10, mnist
 from net_reflection import NetReflection
 from actions import ActionHelper
 from reinforce import NASenv, PGAgent
@@ -41,10 +41,15 @@ def preprocess_mnist(x_train, y_train, x_test, y_test):
     x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], x_test.shape[2], 1)
     return (x_train, y_train), (x_test, y_test)
 
+def preprocess_cifar10(x_train, y_train, x_test, y_test):
+    x_train = x_train.reshape(x_train.shape[0], x_train.shape[1], x_train.shape[2], x_train.shape[3])
+    x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], x_test.shape[2], x_test.shape[3])
+    return (x_train, y_train), (x_test, y_test)
+
 def train(model, x_train, y_train, x_test, y_test):
     history = model.fit(x_train, y_train,
               batch_size=NASconfig.batch_size,
-              epochs=int(NASconfig.max_epochs),
+              epochs=max(1,int(NASconfig.max_epochs)),
               callbacks=model.callbacks,
               #validation_data=(x_test,y_test),
               shuffle=True,
@@ -64,16 +69,8 @@ def main():
     (x_train, y_train), (x_test, y_test), nb_classes = load_data()
     env = NASenv(NASconfig, (x_train, y_train), (x_test, y_test), nb_classes, train_callback=train, test_callback=test)
 
-    #state=[0,0]
-    #state = [1, 7]
-    #nasmodel = NetReflection(x_train.shape[1:], nb_classes, env.observe_architecture(state), env.env_actions, NASconfig)
-    #train(nasmodel.model, x_train, y_train, x_test, y_test)
-    #
-    #loss, acc = test(nasmodel.model, x_test, y_test)
-    #print('\nTesting loss: {}, acc: {}\n'.format(loss, acc))
-
     agent = PGAgent(env)
-    agent.learn(max_epochs=NASconfig.max_num_episodes, batch_size=NASconfig.batch_size)
+    agent.learn(max_episodes=NASconfig.max_num_episodes, batch_size=NASconfig.batch_size)
 
     # Save model and weights
     #if not os.path.isdir(save_dir):

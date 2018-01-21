@@ -1,4 +1,7 @@
+import os
 import sys
+import time
+import math
 import numpy as np
 import keras.backend as K
 from keras import Sequential
@@ -6,6 +9,7 @@ from keras.layers import Dense, Flatten
 from keras.optimizers import Adam, SGD, RMSprop
 from net_reflection import NetReflection
 from actions import ActionHelper
+from caching import CachingHelper
 import random
 from collections import deque
 
@@ -45,7 +49,7 @@ class PGAgent:
         model.add(Flatten(input_shape=self.state_size))
         model.add(Dense(64, activation='relu', init='he_uniform'))
         model.add(Dense(32, activation='relu', init='he_uniform'))
-        model.add(Dense(self.action_size, activation='softmax'))
+        model.add(Dense(self.action_size, activation='sigmoid'))
 
         opt = Adam(lr=self.learning_rate)
         model.compile(loss='categorical_crossentropy', optimizer=opt)
@@ -55,7 +59,9 @@ class PGAgent:
         y = np.zeros([self.action_size])
         y[action] = 1
         grad = (np.array(y).astype('float32') - prob)
-        self.memory.append((state, action, prob, reward, next_state, grad))
+        this_state = np.copy(state)
+        this_state[:] = state[:]
+        self.memory.append((this_state, action, prob, reward, next_state, grad))
 
     def policy(self, state, prev_action):
         state = state.reshape([1, 1, state.shape[-1]])
@@ -74,41 +80,64 @@ class PGAgent:
     def explore(self):
         return self.env.explore()
 
+    def _sigmoid(self,x):
+        return (1 / (1 + np.exp(-x)))
+
     def train(self, batch_size=100):
         minibatch = random.sample(self.memory, min(len(self.memory), batch_size))
         X, Y = [], []
+        i = 0
         for state, action, prob, reward, next_state, gradient in minibatch:
             gradient *= reward
 
-            state = state.reshape([ 1, state.shape[-1]])
-            X.append(state)
+            #state = state.reshape([1, state.shape[-1]])
+            my_state = state.reshape([1, state.shape[-1]])
+            X.append(my_state)
 
-            Y_corr = prob + self.learning_rate*gradient # is stochastic gradient ascend
+            Y_corr = prob + self.learning_rate*gradient # is it SGD
+            Y_corr = self._sigmoid(Y_corr)
             Y_corr = Y_corr.reshape([1,self.env.action_size])
             Y.append(Y_corr)
 
-        X = np.stack(X, axis=0)
+            #print('State: {} | Next: {}'.format(state, next_state))
+            #X=np.array(np.stack(X))
+            #self.model.train_on_batch(X, Y)
+            #X, Y = [], []
+
+        X = np.array(np.stack(X))
+        ##X = np.reshape(X, [None, 1,  X.shape[2]])
+        ##Y = np.stack(Y)
+        ##Y = np.reshape(Y, [1, Y.shape[0], Y.shape[2]])
         self.model.train_on_batch(X, Y)
         self.memory.clear()
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-    def learn(self, max_epochs=10, batch_size=100):
+    def learn(self, max_episodes=10, batch_size=100):
+        level = 1
         last_action = 0
         this_state = np.copy(self.env.current_state)
-        for e in range(max_epochs):
+
+        ee=0
+        for e in range(max_episodes):
             this_state[:] = self.env.current_state[:]
 
+            good_probe = False
             repeat = False
             while (1): # do an action until the state changes
                 # get next state according to current policy function
                 action, prob = self.policy(this_state, last_action)
 
                 # perform the selected action/prob
-                reward, next_state, loss, acc, test_loss, test_acc, repeat = self.env.step(action, prob)
-                if not repeat: break
-            print('Episode {} complete after action {} => reward: {:.2f}, Train loss:{:.4f}, Train acc: {:.2f}, Test acc: {:.4f}'.format(e,action,reward,loss,acc,test_acc))
+                t = time.time()
+                reward, next_state, loss, acc, test_loss, test_acc, repeated = self.env.step(action, prob, level)
+                elapsed = time.time() - t
+                if (reward > 0) and (not repeated): # if so then this was a successfull probe so count one episode more
+                    good_probe = True
+                    ee += 1
+                break
+            print('[{:.2f} secs] Episode {}[{}](level={}) complete after action {} training with {:.2f} epochs => reward: {:.2f}, Train loss:{:.4f}, Train acc: {:.2f}, Test acc: {:.4f}'.format(elapsed,e,ee,level,action,self.env.nasconfig.max_epochs,reward,loss,acc,test_acc))
             sys.stdout.flush()
 
             # keep results for further training
@@ -117,6 +146,13 @@ class PGAgent:
             # update the policy according to the reward
             self.train(batch_size=batch_size)
             last_action = action
+
+            # next level ?
+            if good_probe and (ee % self.env.nasconfig.level_episode_step == 0):
+                self.env.nasconfig.max_epochs *= self.env.nasconfig.epochs_increase
+                if (self.env.nasconfig.reset_state):
+                    state = self.env.best_state
+                level += 1
 
     def load(self, name):
         self.model.load_weights(name)
@@ -128,6 +164,7 @@ class NASenv():
     def __init__(self, nasconfig, trainData, testData, nb_classes, train_callback, test_callback):
         self.nasconfig = nasconfig
         self.env_actions = ActionHelper()
+        self.caching = CachingHelper(nasconfig, cache=True)
         self.nb_classes = nb_classes
         self.trainData = trainData
         self.testData = testData
@@ -151,6 +188,10 @@ class NASenv():
     @property
     def action_size(self):
         return self.state_size[-1]*self.all_actions_length
+
+    @property
+    def best_state(self):
+        return self.caching.getBestState()
 
     def observe_architecture(self, state):
         this_arch = np.zeros(shape=[self.nasconfig.net_layers, self.nasconfig.net_width], dtype=int)
@@ -183,27 +224,34 @@ class NASenv():
         #return which_action+which_layer*self.all_actions_length
         return int(np.random.randint(0, self.action_size))
 
-    def step(self, action, prob):
+    def step(self, action, prob, level=0):
         actionID, node_in_graph = self.env_actions.decode_layer_actionID(action)
 
-        next_state = self.current_state
-        next_state[node_in_graph] = int(actionID)
+        trans_state = np.copy(self.current_state)
+        trans_state[:] = self.current_state[:]
+        trans_state[node_in_graph] = int(actionID)
 
         # train the new architecture defined in "next_state"
         (x_train, y_train) = self.trainData
         (x_test, y_test) = self.testData
 
-        next_state, this_arch = self.observe_architecture(next_state)
+        next_state, this_arch = self.observe_architecture(trans_state)
         if not (next_state == self.current_state).all():
-            nasmodel = NetReflection(x_train.shape[1:], self.nb_classes, this_arch, self.env_actions, self.nasconfig)
+            nasmodel = NetReflection(len(x_train), x_train.shape[1:], self.nb_classes, this_arch, self.env_actions, action, self.nasconfig)
+            self.current_state[:] = next_state[:]
             repeat = False
         else:
             repeat = True
 
         if (not repeat) and (nasmodel.model != None):
-            loss, acc = self.train_callback(nasmodel.model, x_train, y_train, x_test, y_test)
-            test_loss, test_acc = self.test_callback(nasmodel.model, x_test, y_test)
-            reward = 2*acc-1 #1-loss
+            # Caching sols
+            incache, loss, acc, test_loss, test_acc = self.caching.fromcache(self.current_state, level)
+            if not incache:
+                loss, acc = self.train_callback(nasmodel.model, x_train, y_train, x_test, y_test)
+                test_loss, test_acc = self.test_callback(nasmodel.model, x_test, y_test)
+                self.caching.tocache(self.current_state, level, loss, acc, test_loss, test_acc)
+
+            reward = acc
         else:
             acc = 0
             loss = 100

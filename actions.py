@@ -11,6 +11,7 @@ class ActionHelper():
 
         self.actions_name = []
         self.actions_info = []
+        self.actions_canmerge = []
 
         self.actions_type = []
         self.actions_params = []
@@ -27,12 +28,22 @@ class ActionHelper():
     def isNone(self, action):
         return (action == 0)
 
+    def canMerge(self, action):
+        return self.actions_canmerge[action]
+
+    def canStack(self, input, connect):
+        idim1, idim2 = input[1], input[2]
+        cdim1, cdim2 = connect[0], connect[1]
+
+        return (idim1 >= cdim1) and (idim2 >= cdim2)
+
     def decode_layer_actionID(self, action):
         return action % self.all_actions_length, int(action / self.all_actions_length)
 
     def initActionsList(self):
         self.actions_name = ["None"]
         self.actions_info = [""]
+        self.actions_canmerge = [True]
 
         # Add all the other actions
         if (self.action_set == 'short'):
@@ -48,20 +59,20 @@ class ActionHelper():
     def shortActionsList(self, input, which_action):
         self._this_action = None
         self._this_info = ""
-        self._conv2D_blocks(input, which_action, [8, 16, 32, 64], [(3, 3), (5, 5)], ['relu'])
-        self._dropOut_blocks(input, which_action, [0.35, 0.5, 0.85, 0.95, 0.99])
-        self._dense_blocks(input, which_action, [16, 32, 64, 128], ['relu'])
-        self._normalization_blocks(input, which_action, )
-        self._activation_blocks(input, which_action, ['relu', 'tanh', 'selu', 'sigmoid'])
-        self._avgPooling_blocks(input, which_action, [(3, 3), (5, 5)])
-        self._maxPooling_blocks(input, which_action, [(3, 3), (5, 5)])
+        #self._conv2D_blocks(input, which_action, [8, 16, 32], [(3, 3), (5, 5)], ['relu'])
+        self._conv2D_blocks(input, which_action, [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32], [(3, 3), (3, 4), (4, 3), (4,4), (4,5), (5,4), (5, 5)], ['relu'])
+        #self._dropOut_blocks(input, which_action, [0.35, 0.5, 0.85, 0.95, 0.99])
+        #self._dense_blocks(input, which_action, [16, 32, 64, 128], ['relu'])
+        #self._normalization_blocks(input, which_action, )
+        #self._activation_blocks(input, which_action, ['relu', 'tanh', 'selu', 'sigmoid'])
+        self._avgPooling_blocks(input, which_action, [(3, 3), (3, 4), (4, 3), (4,4), (4,5), (5,4), (5, 5)])
+        self._maxPooling_blocks(input, which_action, [(3, 3), (3, 4), (4, 3), (4,4), (4,5), (5,4), (5, 5)])
         return self._this_action, self._this_name, self._this_info
 
-    #def explore(self):
-    #    action_type = int(np.random.randint(0, len(self.actions_type)))
-    #    which_params = int(np.random.randint(0, len(self.actions_params[action_type])))
-    #    #print('JEJE: {} and {}'.format(action_type, which_params))
-    #    return self.actions_params[action_type][which_params]
+    def explore(self):
+        action_type = int(np.random.randint(0, len(self.actions_type)))
+        which_params = int(np.random.randint(0, len(self.actions_params[action_type])))
+        return self.actions_params[action_type][which_params]
 
     def _conv2D_blocks(self, input, which_action, nb_channel_list, kernsize_list, activation_list, padding='same', init='glorot_normal'):
         if (input == None):
@@ -75,6 +86,7 @@ class ActionHelper():
                     if (input == None):
                         self.actions_name.append('Conv2D'.format(self._curr_action_num))
                         self.actions_info.append('{}@{}-{}'.format(i,k,activation))
+                        self.actions_canmerge.append(True)
                         self.actions_params[-1].append(self._curr_action_num)
                     else:
                         if (self._curr_action_num == which_action):
@@ -93,9 +105,11 @@ class ActionHelper():
             if (input == None):
                 self.actions_name.append('MaxPool'.format(self._curr_action_num))
                 self.actions_info.append('{}'.format(p))
+                self.actions_canmerge.append(False)
                 self.actions_params[-1].append(self._curr_action_num)
             else:
                 if (self._curr_action_num == which_action):
+                    if not self.canStack(input.shape, p): return None, '', '' #Unable to stack these two layers
                     self._this_action = MaxPool2D(p)(input)
                     self._this_name = self.actions_name[self._curr_action_num]
                     self._this_info = self.actions_info[self._curr_action_num]
@@ -110,9 +124,11 @@ class ActionHelper():
             if (input == None):
                 self.actions_name.append('AvgPool'.format(self._curr_action_num))
                 self.actions_info.append('{}'.format(p))
+                self.actions_canmerge.append(False)
                 self.actions_params[-1].append(self._curr_action_num)
             else:
                 if (self._curr_action_num == which_action):
+                    if not self.canStack(input.shape, p): return None, '', ''  # Unable to stack these two layers
                     self._this_action = AvgPool2D(p)(input)
                     self._this_name = self.actions_name[self._curr_action_num]
                     self._this_info = self.actions_info[self._curr_action_num]
@@ -128,6 +144,7 @@ class ActionHelper():
             if (input == None):
                 self.actions_name.append('DropOut'.format(self._curr_action_num))
                 self.actions_info.append('{:2}'.format(d))
+                self.actions_canmerge.append(True)
                 self.actions_params[-1].append(self._curr_action_num)
             else:
                 if (self._curr_action_num == which_action):
@@ -147,6 +164,7 @@ class ActionHelper():
                 if (input == None):
                     self.actions_name.append('Dense'.format(self._curr_action_num))
                     self.actions_info.append('{}-{}'.format(o, activation))
+                    self.actions_canmerge.append(True)
                     self.actions_params[-1].append(self._curr_action_num)
                 else:
                     if (self._curr_action_num == which_action):
@@ -164,6 +182,7 @@ class ActionHelper():
         if (input == None):
             self.actions_name.append('BN'.format(self._curr_action_num))
             self.actions_info.append("")
+            self.actions_canmerge.append(True)
             self.actions_params[-1].append(self._curr_action_num)
         else:
             if (self._curr_action_num == which_action):
@@ -182,6 +201,7 @@ class ActionHelper():
             if (input == None):
                 self.actions_name.append('Act'.format(self._curr_action_num))
                 self.actions_info.append('{}'.format(a))
+                self.actions_canmerge.append(True)
                 self.actions_params[-1].append(self._curr_action_num)
             else:
                 if (self._curr_action_num == which_action):
