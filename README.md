@@ -1,2 +1,2 @@
 # keras-nas-pgrl
-Network Architecture Search (NAS) using policy gradient Reinforcement Learning (RL)
+Neural Architecture Search (NAS) using policy gradient Reinforcement Learning (RL)
